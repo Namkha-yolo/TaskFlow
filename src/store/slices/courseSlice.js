@@ -1,7 +1,7 @@
 // Dummy slice to satisfy imports
-export const authSlice = {
+export const courseSlice = {
   actions: {},
   reducer: (state = {}, action) => state
 };
 
-export default authSlice.reducer;
+export default courseSlice.reducer;
