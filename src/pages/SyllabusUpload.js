@@ -477,7 +477,7 @@ const SyllabusUpload = () => {
               <ol className="ps-3">
                 <li className="mb-2">Select an existing course or create a new one</li>
                 <li className="mb-2">Upload your syllabus PDF file</li>
-                <li className="mb-2">Our AI extracts assignments and due dates</li>
+                <li className="mb-2">The system extracts assignments and due dates</li>
                 <li className="mb-2">Review and edit the extracted information</li>
                 <li className="mb-2">Save assignments to your course</li>
               </ol>

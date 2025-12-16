@@ -5,8 +5,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const pdfParse = require('pdf-parse');
 const { auth } = require('../middleware/auth');
-const Course = require('../models/Course');
-const Assignment = require('../models/Assignment');
+const supabase = require('../config/supabase');
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -42,13 +41,12 @@ const upload = multer({
 // Helper function to extract dates from text
 const extractDates = (text) => {
   const dates = [];
-  // Common date patterns
   const datePatterns = [
-    /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/g, // MM/DD/YYYY or MM-DD-YYYY
-    /(\w+)\s+(\d{1,2}),?\s+(\d{4})/g, // Month DD, YYYY
-    /(\d{1,2})\s+(\w+)\s+(\d{4})/g, // DD Month YYYY
+    /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/g,
+    /(\w+)\s+(\d{1,2}),?\s+(\d{4})/g,
+    /(\d{1,2})\s+(\w+)\s+(\d{4})/g,
   ];
-  
+
   datePatterns.forEach(pattern => {
     const matches = text.matchAll(pattern);
     for (const match of matches) {
@@ -69,7 +67,7 @@ const extractDates = (text) => {
       }
     }
   });
-  
+
   return dates;
 };
 
@@ -77,37 +75,29 @@ const extractDates = (text) => {
 const extractAssignments = (text) => {
   const assignments = [];
   const lines = text.split('\n');
-  
-  // Keywords that indicate assignments
+
   const assignmentKeywords = [
     'assignment', 'homework', 'hw', 'quiz', 'exam', 'midterm', 'final',
     'project', 'paper', 'presentation', 'lab', 'test', 'due'
   ];
-  
-  // Keywords for grade weights
-  const weightKeywords = ['worth', 'weight', 'percentage', '%', 'points', 'pts'];
-  
+
   lines.forEach((line, index) => {
     const lowerLine = line.toLowerCase();
-    
-    // Check if line contains assignment keywords
-    const hasAssignmentKeyword = assignmentKeywords.some(keyword => 
+
+    const hasAssignmentKeyword = assignmentKeywords.some(keyword =>
       lowerLine.includes(keyword)
     );
-    
+
     if (hasAssignmentKeyword) {
-      // Try to extract assignment name
       let name = line.trim();
-      
-      // Look for dates in this line and nearby lines
+
       let dueDate = null;
       const nearbyText = lines.slice(Math.max(0, index - 2), Math.min(lines.length, index + 3)).join(' ');
       const dates = extractDates(nearbyText);
       if (dates.length > 0) {
         dueDate = dates[0].parsed;
       }
-      
-      // Look for weight/points
+
       let weight = null;
       const weightMatch = line.match(/(\d+(?:\.\d+)?)\s*%/);
       if (weightMatch) {
@@ -118,11 +108,10 @@ const extractAssignments = (text) => {
           weight = parseInt(pointsMatch[1]);
         }
       }
-      
-      // Determine category
-      let category = 'Other';
+
+      let category = 'Assignment';
       if (lowerLine.includes('homework') || lowerLine.includes('hw')) {
-        category = 'Homework';
+        category = 'Assignment';
       } else if (lowerLine.includes('quiz')) {
         category = 'Quiz';
       } else if (lowerLine.includes('exam') || lowerLine.includes('midterm') || lowerLine.includes('final')) {
@@ -131,175 +120,112 @@ const extractAssignments = (text) => {
         category = 'Project';
       } else if (lowerLine.includes('lab')) {
         category = 'Lab';
-      } else if (lowerLine.includes('discussion') || lowerLine.includes('participation')) {
-        category = 'Discussion';
+      } else if (lowerLine.includes('paper')) {
+        category = 'Paper';
       }
-      
+
       if (name && name.length > 3) {
         assignments.push({
-          name: name.substring(0, 100), // Limit length
-          dueDate,
-          weight,
-          category,
+          title: name.substring(0, 100),
+          dueDate: dueDate ? dueDate.toISOString() : null,
+          gradeWeight: weight,
+          type: category,
           description: nearbyText.substring(0, 200)
         });
       }
     }
   });
-  
+
   return assignments;
 };
 
-// Helper function to extract grade breakdown
-const extractGradeBreakdown = (text) => {
-  const breakdown = [];
-  const lines = text.split('\n');
-  
-  // Look for grade/grading section
-  const gradingSection = lines.findIndex(line => 
-    line.toLowerCase().includes('grading') || 
-    line.toLowerCase().includes('grade breakdown') ||
-    line.toLowerCase().includes('assessment')
-  );
-  
-  if (gradingSection !== -1) {
-    // Check next 20 lines for percentages
-    for (let i = gradingSection; i < Math.min(gradingSection + 20, lines.length); i++) {
-      const line = lines[i];
-      const match = line.match(/(.+?)\s*[:=\-]\s*(\d+(?:\.\d+)?)\s*%/);
-      if (match) {
-        breakdown.push({
-          category: match[1].trim(),
-          weight: parseFloat(match[2])
-        });
-      }
-    }
-  }
-  
-  // If no breakdown found, look for percentages throughout document
-  if (breakdown.length === 0) {
-    const percentagePattern = /(.{5,50}?)\s*[:=\-]?\s*(\d+(?:\.\d+)?)\s*%/g;
-    const matches = text.matchAll(percentagePattern);
-    
-    for (const match of matches) {
-      const category = match[1].trim();
-      // Filter out likely non-grade related percentages
-      if (!category.match(/\d{4}/) && // Not a year
-          !category.toLowerCase().includes('student') &&
-          !category.toLowerCase().includes('attendance') &&
-          category.length > 3) {
-        breakdown.push({
-          category,
-          weight: parseFloat(match[2])
-        });
-      }
-    }
-  }
-  
-  return breakdown;
-};
-
-// @route   POST /api/syllabus/upload/:courseId
+// @route   POST /api/syllabus/upload
 // @desc    Upload and parse syllabus PDF
 // @access  Private
-router.post('/upload/:courseId', auth, upload.single('syllabus'), async (req, res) => {
+router.post('/upload', auth, upload.single('syllabus'), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
+      return res.status(400).json({ message: 'No file uploaded' });
     }
-    
-    const { courseId } = req.params;
-    
-    // Verify course belongs to user
-    const course = await Course.findOne({ _id: courseId, user: req.user._id });
-    if (!course) {
-      return res.status(404).json({ error: 'Course not found' });
-    }
-    
+
     // Read and parse PDF
     const pdfPath = req.file.path;
     const pdfBuffer = await fs.readFile(pdfPath);
     const pdfData = await pdfParse(pdfBuffer);
-    
+
     // Extract information from PDF text
     const assignments = extractAssignments(pdfData.text);
-    const gradeBreakdown = extractGradeBreakdown(pdfData.text);
-    
-    // Update course with syllabus info
-    course.syllabus = {
-      fileName: req.file.originalname,
-      uploadDate: new Date(),
-      extractedData: {
-        assignments,
-        gradeBreakdown
-      }
-    };
-    
-    // Update grade breakdown if found
-    if (gradeBreakdown.length > 0) {
-      course.gradeBreakdown = gradeBreakdown;
-    }
-    
-    await course.save();
-    
-    // Return extracted data for review/editing
+
+    // Clean up uploaded file
+    await fs.unlink(pdfPath).catch(() => {});
+
     res.json({
       success: true,
       fileName: req.file.originalname,
       extractedData: {
         assignments,
-        gradeBreakdown,
-        rawText: pdfData.text.substring(0, 1000) // First 1000 chars for preview
-      },
-      course
+        rawText: pdfData.text.substring(0, 2000)
+      }
     });
   } catch (error) {
     console.error('Syllabus upload error:', error);
-    res.status(500).json({ error: 'Error processing syllabus' });
+    res.status(500).json({ message: 'Error processing syllabus' });
   }
 });
 
-// @route   POST /api/syllabus/confirm/:courseId
+// @route   POST /api/syllabus/confirm
 // @desc    Confirm and create assignments from extracted syllabus data
 // @access  Private
-router.post('/confirm/:courseId', auth, async (req, res) => {
+router.post('/confirm', auth, async (req, res) => {
   try {
-    const { courseId } = req.params;
-    const { assignments, gradeBreakdown } = req.body;
-    
+    const { courseId, assignments } = req.body;
+
+    if (!courseId) {
+      return res.status(400).json({ message: 'Course ID is required' });
+    }
+
     // Verify course belongs to user
-    const course = await Course.findOne({ _id: courseId, user: req.user._id });
-    if (!course) {
-      return res.status(404).json({ error: 'Course not found' });
+    const { data: course, error: courseError } = await supabase
+      .from('courses')
+      .select('id, name')
+      .eq('id', courseId)
+      .eq('user_id', req.user.id)
+      .single();
+
+    if (courseError || !course) {
+      return res.status(404).json({ message: 'Course not found' });
     }
-    
-    // Update grade breakdown if provided
-    if (gradeBreakdown && gradeBreakdown.length > 0) {
-      course.gradeBreakdown = gradeBreakdown;
-      await course.save();
-    }
-    
+
     // Create assignments
-    const createdAssignments = [];
-    for (const assignmentData of assignments) {
-      // Only create if has name and due date
-      if (assignmentData.name && assignmentData.dueDate) {
-        const assignment = new Assignment({
-          user: req.user._id,
-          course: courseId,
-          name: assignmentData.name,
-          description: assignmentData.description || '',
-          category: assignmentData.category || 'Other',
-          dueDate: new Date(assignmentData.dueDate),
-          weight: assignmentData.weight || 0,
-          totalPoints: assignmentData.totalPoints || 100
-        });
-        
-        await assignment.save();
-        createdAssignments.push(assignment);
-      }
+    const assignmentsToInsert = assignments
+      .filter(a => a.title && a.dueDate)
+      .map(a => ({
+        user_id: req.user.id,
+        course_id: courseId,
+        title: a.title,
+        description: a.description || '',
+        type: a.type || 'Assignment',
+        due_date: a.dueDate,
+        grade_weight: a.gradeWeight,
+        max_grade: a.maxGrade || 100,
+        status: 'not-started',
+        priority: 'medium'
+      }));
+
+    if (assignmentsToInsert.length === 0) {
+      return res.status(400).json({ message: 'No valid assignments to create' });
     }
-    
+
+    const { data: createdAssignments, error } = await supabase
+      .from('assignments')
+      .insert(assignmentsToInsert)
+      .select();
+
+    if (error) {
+      console.error('Supabase error:', error);
+      return res.status(500).json({ message: 'Error creating assignments' });
+    }
+
     res.json({
       success: true,
       message: `Created ${createdAssignments.length} assignments`,
@@ -308,34 +234,32 @@ router.post('/confirm/:courseId', auth, async (req, res) => {
     });
   } catch (error) {
     console.error('Syllabus confirmation error:', error);
-    res.status(500).json({ error: 'Error creating assignments from syllabus' });
+    res.status(500).json({ message: 'Error creating assignments from syllabus' });
   }
 });
 
-// @route   GET /api/syllabus/parse-text
-// @desc    Parse syllabus text (for manual input or correction)
+// @route   POST /api/syllabus/parse-text
+// @desc    Parse syllabus text (for manual input)
 // @access  Private
 router.post('/parse-text', auth, async (req, res) => {
   try {
     const { text } = req.body;
-    
+
     if (!text) {
-      return res.status(400).json({ error: 'No text provided' });
+      return res.status(400).json({ message: 'No text provided' });
     }
-    
+
     const assignments = extractAssignments(text);
-    const gradeBreakdown = extractGradeBreakdown(text);
-    
+
     res.json({
       success: true,
       extractedData: {
-        assignments,
-        gradeBreakdown
+        assignments
       }
     });
   } catch (error) {
     console.error('Text parsing error:', error);
-    res.status(500).json({ error: 'Error parsing text' });
+    res.status(500).json({ message: 'Error parsing text' });
   }
 });
 

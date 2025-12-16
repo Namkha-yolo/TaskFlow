@@ -1,234 +1,266 @@
 const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
+const supabase = require('../config/supabase');
 const { auth } = require('../middleware/auth');
-const Course = require('../models/Course');
-const Assignment = require('../models/Assignment');
 
 // @route   GET /api/courses
-// @desc    Get all user's courses
+// @desc    Get all courses for user
 // @access  Private
 router.get('/', auth, async (req, res) => {
   try {
-    const courses = await Course.find({ 
-      user: req.user._id,
-      isActive: true 
-    }).sort({ createdAt: -1 });
-    
+    const { data: courses, error } = await supabase
+      .from('courses')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Supabase error:', error);
+      return res.status(500).json({ message: 'Error fetching courses' });
+    }
+
     res.json(courses);
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Server error fetching courses' });
-  }
-});
-
-// @route   GET /api/courses/:id
-// @desc    Get single course with assignments
-// @access  Private
-router.get('/:id', auth, async (req, res) => {
-  try {
-    const course = await Course.findOne({
-      _id: req.params.id,
-      user: req.user._id
-    });
-    
-    if (!course) {
-      return res.status(404).json({ error: 'Course not found' });
-    }
-    
-    // Get assignments for this course
-    const assignments = await Assignment.find({
-      course: req.params.id,
-      user: req.user._id
-    }).sort({ dueDate: 1 });
-    
-    // Calculate current grade
-    await course.calculateCurrentGrade();
-    
-    res.json({
-      course,
-      assignments
-    });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Server error fetching course' });
+    res.status(500).json({ message: 'Server error fetching courses' });
   }
 });
 
 // @route   POST /api/courses
-// @desc    Create new course
+// @desc    Create a new course
 // @access  Private
 router.post('/', auth, [
   body('name').trim().notEmpty().withMessage('Course name is required'),
-  body('semester').trim().notEmpty().withMessage('Semester is required'),
-  body('year').isNumeric().withMessage('Valid year is required')
+  body('code').trim().notEmpty().withMessage('Course code is required')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
     }
-    
+
     const {
       name,
-      courseCode,
-      professor,
+      code,
+      instructor,
       semester,
       year,
-      color,
       credits,
-      gradeBreakdown,
-      schedule,
-      targetGrade,
-      notes
+      color,
+      location,
+      meetingDays,
+      meetingTime
     } = req.body;
-    
-    // Validate grade breakdown if provided
-    if (gradeBreakdown && gradeBreakdown.length > 0) {
-      const totalWeight = gradeBreakdown.reduce((sum, item) => sum + item.weight, 0);
-      if (totalWeight !== 100) {
-        return res.status(400).json({ 
-          error: 'Grade breakdown weights must sum to 100%' 
-        });
-      }
+
+    const { data: course, error } = await supabase
+      .from('courses')
+      .insert({
+        user_id: req.user.id,
+        name,
+        code,
+        instructor,
+        semester,
+        year,
+        credits,
+        color: color || '#3D2E1F',
+        location,
+        meeting_days: meetingDays,
+        meeting_time_start: meetingTime?.start,
+        meeting_time_end: meetingTime?.end
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Supabase error:', error);
+      return res.status(500).json({ message: 'Error creating course' });
     }
-    
-    const course = new Course({
-      user: req.user._id,
-      name,
-      courseCode,
-      professor,
-      semester,
-      year,
-      color: color || '#7c3aed',
-      credits: credits || 3,
-      gradeBreakdown: gradeBreakdown || [],
-      schedule: schedule || {},
-      targetGrade: targetGrade || 90,
-      notes
-    });
-    
-    await course.save();
-    
-    // Add course to user's courses array
-    req.user.courses.push(course._id);
-    await req.user.save();
-    
+
     res.status(201).json(course);
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Server error creating course' });
+    res.status(500).json({ message: 'Server error creating course' });
+  }
+});
+
+// @route   GET /api/courses/:id
+// @desc    Get a single course
+// @access  Private
+router.get('/:id', auth, async (req, res) => {
+  try {
+    const { data: course, error } = await supabase
+      .from('courses')
+      .select('*')
+      .eq('id', req.params.id)
+      .eq('user_id', req.user.id)
+      .single();
+
+    if (error || !course) {
+      return res.status(404).json({ message: 'Course not found' });
+    }
+
+    res.json(course);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Server error fetching course' });
   }
 });
 
 // @route   PUT /api/courses/:id
-// @desc    Update course
+// @desc    Update a course
 // @access  Private
 router.put('/:id', auth, async (req, res) => {
   try {
-    const course = await Course.findOne({
-      _id: req.params.id,
-      user: req.user._id
-    });
-    
-    if (!course) {
-      return res.status(404).json({ error: 'Course not found' });
+    const {
+      name,
+      code,
+      instructor,
+      semester,
+      year,
+      credits,
+      color,
+      location,
+      meetingDays,
+      meetingTime,
+      currentGrade,
+      targetGrade
+    } = req.body;
+
+    // First check if course belongs to user
+    const { data: existingCourse, error: fetchError } = await supabase
+      .from('courses')
+      .select('id')
+      .eq('id', req.params.id)
+      .eq('user_id', req.user.id)
+      .single();
+
+    if (fetchError || !existingCourse) {
+      return res.status(404).json({ message: 'Course not found' });
     }
-    
-    // Validate grade breakdown if provided
-    if (req.body.gradeBreakdown && req.body.gradeBreakdown.length > 0) {
-      const totalWeight = req.body.gradeBreakdown.reduce((sum, item) => sum + item.weight, 0);
-      if (totalWeight !== 100) {
-        return res.status(400).json({ 
-          error: 'Grade breakdown weights must sum to 100%' 
-        });
-      }
+
+    const updateData = {};
+    if (name !== undefined) updateData.name = name;
+    if (code !== undefined) updateData.code = code;
+    if (instructor !== undefined) updateData.instructor = instructor;
+    if (semester !== undefined) updateData.semester = semester;
+    if (year !== undefined) updateData.year = year;
+    if (credits !== undefined) updateData.credits = credits;
+    if (color !== undefined) updateData.color = color;
+    if (location !== undefined) updateData.location = location;
+    if (meetingDays !== undefined) updateData.meeting_days = meetingDays;
+    if (meetingTime?.start !== undefined) updateData.meeting_time_start = meetingTime.start;
+    if (meetingTime?.end !== undefined) updateData.meeting_time_end = meetingTime.end;
+    if (currentGrade !== undefined) updateData.current_grade = currentGrade;
+    if (targetGrade !== undefined) updateData.target_grade = targetGrade;
+
+    const { data: course, error } = await supabase
+      .from('courses')
+      .update(updateData)
+      .eq('id', req.params.id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Supabase error:', error);
+      return res.status(500).json({ message: 'Error updating course' });
     }
-    
-    // Update fields
-    const updateFields = [
-      'name', 'courseCode', 'professor', 'semester', 'year',
-      'color', 'credits', 'gradeBreakdown', 'schedule',
-      'targetGrade', 'notes', 'isActive'
-    ];
-    
-    updateFields.forEach(field => {
-      if (req.body[field] !== undefined) {
-        course[field] = req.body[field];
-      }
-    });
-    
-    await course.save();
-    
+
     res.json(course);
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Server error updating course' });
+    res.status(500).json({ message: 'Server error updating course' });
   }
 });
 
 // @route   DELETE /api/courses/:id
-// @desc    Delete course (soft delete - marks as inactive)
+// @desc    Delete a course
 // @access  Private
 router.delete('/:id', auth, async (req, res) => {
   try {
-    const course = await Course.findOne({
-      _id: req.params.id,
-      user: req.user._id
-    });
-    
-    if (!course) {
-      return res.status(404).json({ error: 'Course not found' });
+    // First check if course belongs to user
+    const { data: existingCourse, error: fetchError } = await supabase
+      .from('courses')
+      .select('id')
+      .eq('id', req.params.id)
+      .eq('user_id', req.user.id)
+      .single();
+
+    if (fetchError || !existingCourse) {
+      return res.status(404).json({ message: 'Course not found' });
     }
-    
-    // Soft delete - mark as inactive
-    course.isActive = false;
-    await course.save();
-    
-    // Optionally also mark all assignments as completed or archived
-    if (req.query.archiveAssignments === 'true') {
-      await Assignment.updateMany(
-        { course: req.params.id, user: req.user._id },
-        { $set: { completed: true } }
-      );
+
+    // Delete course (assignments will cascade delete due to FK)
+    const { error } = await supabase
+      .from('courses')
+      .delete()
+      .eq('id', req.params.id);
+
+    if (error) {
+      console.error('Supabase error:', error);
+      return res.status(500).json({ message: 'Error deleting course' });
     }
-    
-    // Remove from user's courses array
-    req.user.courses = req.user.courses.filter(
-      c => c.toString() !== req.params.id
-    );
-    await req.user.save();
-    
-    res.json({ message: 'Course archived successfully' });
+
+    res.json({ message: 'Course deleted successfully' });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Server error deleting course' });
+    res.status(500).json({ message: 'Server error deleting course' });
   }
 });
 
-// @route   POST /api/courses/:id/calculate-grade
-// @desc    Recalculate course grade
+// @route   GET /api/courses/:id/stats
+// @desc    Get course statistics
 // @access  Private
-router.post('/:id/calculate-grade', auth, async (req, res) => {
+router.get('/:id/stats', auth, async (req, res) => {
   try {
-    const course = await Course.findOne({
-      _id: req.params.id,
-      user: req.user._id
-    });
-    
-    if (!course) {
-      return res.status(404).json({ error: 'Course not found' });
+    // Get course
+    const { data: course, error: courseError } = await supabase
+      .from('courses')
+      .select('*')
+      .eq('id', req.params.id)
+      .eq('user_id', req.user.id)
+      .single();
+
+    if (courseError || !course) {
+      return res.status(404).json({ message: 'Course not found' });
     }
-    
-    const grade = await course.calculateCurrentGrade();
-    
-    res.json({ 
+
+    // Get assignments for this course
+    const { data: assignments, error: assignmentsError } = await supabase
+      .from('assignments')
+      .select('*')
+      .eq('course_id', req.params.id);
+
+    if (assignmentsError) {
+      return res.status(500).json({ message: 'Error fetching assignments' });
+    }
+
+    // Calculate stats
+    const totalAssignments = assignments.length;
+    const completedAssignments = assignments.filter(a => a.completed).length;
+    const pendingAssignments = totalAssignments - completedAssignments;
+
+    // Calculate grade if there are graded assignments
+    const gradedAssignments = assignments.filter(a => a.earned_points !== null && a.max_grade);
+    let currentGrade = null;
+    if (gradedAssignments.length > 0) {
+      const totalEarned = gradedAssignments.reduce((sum, a) => sum + a.earned_points, 0);
+      const totalPossible = gradedAssignments.reduce((sum, a) => sum + a.max_grade, 0);
+      currentGrade = (totalEarned / totalPossible) * 100;
+    }
+
+    res.json({
       course,
-      currentGrade: grade
+      stats: {
+        totalAssignments,
+        completedAssignments,
+        pendingAssignments,
+        currentGrade
+      }
     });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Server error calculating grade' });
+    res.status(500).json({ message: 'Server error getting course stats' });
   }
 });
 

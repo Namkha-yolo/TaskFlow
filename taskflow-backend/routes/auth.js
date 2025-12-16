@@ -1,9 +1,9 @@
 const express = require('express');
 const router = express.Router();
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const passport = require('passport');
 const { body, validationResult } = require('express-validator');
-const User = require('../models/User');
+const supabase = require('../config/supabase');
 const { auth } = require('../middleware/auth');
 
 // Generate JWT token
@@ -31,34 +31,50 @@ router.post('/register', [
     const { name, email, password, school, major, year } = req.body;
 
     // Check if user exists
-    const existingUser = await User.findOne({ email });
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', email)
+      .single();
+
     if (existingUser) {
-      return res.status(400).json({ error: 'User already exists with this email' });
+      return res.status(400).json({ message: 'User already exists with this email' });
     }
 
-    // Create user
-    const user = new User({
-      name,
-      email,
-      password,
-      school,
-      major,
-      year
-    });
+    // Hash password
+    const salt = await bcrypt.genSalt(10);
+    const passwordHash = await bcrypt.hash(password, salt);
 
-    await user.save();
+    // Create user
+    const { data: user, error } = await supabase
+      .from('users')
+      .insert({
+        name,
+        email,
+        password_hash: passwordHash,
+        school,
+        major,
+        year
+      })
+      .select('id, name, email, school, major, year, avatar_url, created_at')
+      .single();
+
+    if (error) {
+      console.error('Supabase error:', error);
+      return res.status(500).json({ message: 'Error creating user' });
+    }
 
     // Generate token
-    const token = generateToken(user._id);
+    const token = generateToken(user.id);
 
     res.status(201).json({
       success: true,
       token,
-      user: user.getPublicProfile()
+      user
     });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Server error during registration' });
+    res.status(500).json({ message: 'Server error during registration' });
   }
 });
 
@@ -78,77 +94,61 @@ router.post('/login', [
     const { email, password } = req.body;
 
     // Find user
-    const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', email)
+      .single();
+
+    if (error || !user) {
+      return res.status(401).json({ message: 'Invalid credentials' });
     }
 
     // Check password
-    const isMatch = await user.comparePassword(password);
+    const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    // Update last active
-    user.lastActive = Date.now();
-    await user.save();
-
     // Generate token
-    const token = generateToken(user._id);
+    const token = generateToken(user.id);
+
+    // Remove password from response
+    const { password_hash, ...userWithoutPassword } = user;
 
     res.json({
       success: true,
       token,
-      user: user.getPublicProfile()
+      user: userWithoutPassword
     });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Server error during login' });
+    res.status(500).json({ message: 'Server error during login' });
   }
 });
-
-// @route   GET /api/auth/google
-// @desc    Google OAuth login
-// @access  Public
-router.get('/google',
-  passport.authenticate('google', { scope: ['profile', 'email'] })
-);
-
-// @route   GET /api/auth/google/callback
-// @desc    Google OAuth callback
-// @access  Public
-router.get('/google/callback',
-  passport.authenticate('google', { failureRedirect: `${process.env.CLIENT_URL}/login` }),
-  async (req, res) => {
-    try {
-      // Generate token for the authenticated user
-      const token = generateToken(req.user._id);
-      
-      // Redirect to client with token
-      res.redirect(`${process.env.CLIENT_URL}/auth/success?token=${token}`);
-    } catch (error) {
-      console.error(error);
-      res.redirect(`${process.env.CLIENT_URL}/login?error=oauth_failed`);
-    }
-  }
-);
 
 // @route   GET /api/auth/me
 // @desc    Get current user
 // @access  Private
 router.get('/me', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id)
-      .select('-password')
-      .populate('courses');
-    
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, name, email, school, major, year, avatar_url, created_at')
+      .eq('id', req.user.id)
+      .single();
+
+    if (error || !user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
     res.json({
       success: true,
       user
     });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Server error fetching user' });
+    res.status(500).json({ message: 'Server error fetching user' });
   }
 });
 
@@ -166,40 +166,81 @@ router.put('/password', auth, [
     }
 
     const { currentPassword, newPassword } = req.body;
-    
-    // Get user with password field
-    const user = await User.findById(req.user._id);
-    
-    // Check current password
-    const isMatch = await user.comparePassword(currentPassword);
-    if (!isMatch) {
-      return res.status(401).json({ error: 'Current password is incorrect' });
+
+    // Get user with password
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', req.user.id)
+      .single();
+
+    if (error || !user) {
+      return res.status(404).json({ message: 'User not found' });
     }
-    
+
+    // Check current password
+    const isMatch = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!isMatch) {
+      return res.status(401).json({ message: 'Current password is incorrect' });
+    }
+
+    // Hash new password
+    const salt = await bcrypt.genSalt(10);
+    const newPasswordHash = await bcrypt.hash(newPassword, salt);
+
     // Update password
-    user.password = newPassword;
-    await user.save();
-    
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ password_hash: newPasswordHash })
+      .eq('id', req.user.id);
+
+    if (updateError) {
+      return res.status(500).json({ message: 'Error updating password' });
+    }
+
     res.json({
       success: true,
       message: 'Password updated successfully'
     });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Server error updating password' });
+    res.status(500).json({ message: 'Server error updating password' });
+  }
+});
+
+// @route   PUT /api/auth/profile
+// @desc    Update user profile
+// @access  Private
+router.put('/profile', auth, async (req, res) => {
+  try {
+    const { name, school, major, year } = req.body;
+
+    const { data: user, error } = await supabase
+      .from('users')
+      .update({ name, school, major, year })
+      .eq('id', req.user.id)
+      .select('id, name, email, school, major, year, avatar_url, created_at')
+      .single();
+
+    if (error) {
+      return res.status(500).json({ message: 'Error updating profile' });
+    }
+
+    res.json({
+      success: true,
+      user
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Server error updating profile' });
   }
 });
 
 // @route   POST /api/auth/logout
-// @desc    Logout user (mainly for session cleanup)
+// @desc    Logout user
 // @access  Private
 router.post('/logout', auth, (req, res) => {
-  req.logout((err) => {
-    if (err) {
-      return res.status(500).json({ error: 'Error logging out' });
-    }
-    res.json({ success: true, message: 'Logged out successfully' });
-  });
+  res.json({ success: true, message: 'Logged out successfully' });
 });
 
 module.exports = router;

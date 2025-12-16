@@ -1,7 +1,7 @@
 {
   "name": "taskflow-backend",
   "version": "1.0.0",
-  "description": "TaskFlow Student Assignment Tracker Backend",
+  "description": "TaskFlow Student Assignment Tracker Backend with Supabase",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -9,8 +9,8 @@
     "test": "jest"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
     "express": "^4.18.2",
-    "mongoose": "^7.5.0",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
     "cors": "^2.8.5",
@@ -18,9 +18,6 @@
     "express-validator": "^7.0.1",
     "pdf-parse": "^1.1.1",
     "@sendgrid/mail": "^7.7.0",
-    "passport": "^0.6.0",
-    "passport-google-oauth20": "^2.0.0",
-    "express-session": "^1.17.3",
     "multer": "^1.4.5-lts.1",
     "node-cron": "^3.0.2"
   },

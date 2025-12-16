@@ -1,48 +1,112 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Container, Row, Col, Card, Button, Form, Badge, ListGroup, Breadcrumb } from 'react-bootstrap';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Container, Row, Col, Button, Form, Badge, ListGroup } from 'react-bootstrap';
 import { toast } from 'react-toastify';
-import axios from 'axios';
+import { FaPlay, FaPause, FaRedo, FaForward, FaCoffee, FaBrain } from 'react-icons/fa';
+import { useAuth } from '../context/AuthContext';
+import { useCourses } from '../context/CourseContext';
+import Footer from '../components/Footer';
 
 const StudyTimer = () => {
+  const { user } = useAuth();
+  const { courses } = useCourses();
+
   // Timer states
-  const [time, setTime] = useState(25 * 60); // 25 minutes in seconds
+  const [time, setTime] = useState(25 * 60);
   const [isActive, setIsActive] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isBreak, setIsBreak] = useState(false);
-  
+
   // Settings
   const [workDuration, setWorkDuration] = useState(25);
   const [shortBreak, setShortBreak] = useState(5);
   const [longBreak, setLongBreak] = useState(15);
   const [sessionsUntilLongBreak, setSessionsUntilLongBreak] = useState(4);
-  
+
   // Tracking
   const [currentSession, setCurrentSession] = useState(1);
-  const [completedSessions, setCompletedSessions] = useState(0);
   const [selectedCourse, setSelectedCourse] = useState('');
-  const [selectedAssignment, setSelectedAssignment] = useState('');
   const [sessionNotes, setSessionNotes] = useState('');
-  
-  // Data
-  const [courses, setCourses] = useState([]);
-  const [assignments, setAssignments] = useState([]);
   const [todaysSessions, setTodaysSessions] = useState([]);
   const [totalTimeToday, setTotalTimeToday] = useState(0);
-  
+
   // Refs
   const intervalRef = useRef(null);
-  const audioRef = useRef(new Audio('/notification.mp3'));
+
+  // Load today's sessions from localStorage
+  const loadTodaysSessions = useCallback(() => {
+    if (!user?.id) return;
+
+    const key = `taskflow_study_sessions_${user.id}`;
+    const allSessions = JSON.parse(localStorage.getItem(key) || '[]');
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const todaySessions = allSessions.filter(s => {
+      const sessionDate = new Date(s.completed_at);
+      return sessionDate >= today;
+    }).sort((a, b) => new Date(b.completed_at) - new Date(a.completed_at));
+
+    setTodaysSessions(todaySessions);
+    setTotalTimeToday(todaySessions.reduce((sum, s) => sum + s.duration_minutes, 0));
+  }, [user?.id]);
 
   useEffect(() => {
-    fetchCourses();
-    fetchTodaysSessions();
-    
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
+    loadTodaysSessions();
+  }, [loadTodaysSessions]);
+
+  // Save session to localStorage
+  const saveSession = useCallback(() => {
+    if (!user?.id) return;
+
+    const key = `taskflow_study_sessions_${user.id}`;
+    const allSessions = JSON.parse(localStorage.getItem(key) || '[]');
+
+    const courseName = selectedCourse
+      ? courses.find(c => c.id === selectedCourse)?.name || 'Unknown Course'
+      : 'General Study';
+
+    const newSession = {
+      id: Math.random().toString(36).substr(2, 9),
+      user_id: user.id,
+      course_id: selectedCourse || null,
+      courseName,
+      duration_minutes: workDuration,
+      session_type: 'pomodoro',
+      notes: sessionNotes,
+      completed_at: new Date().toISOString()
     };
-  }, []);
+
+    allSessions.push(newSession);
+    localStorage.setItem(key, JSON.stringify(allSessions));
+    loadTodaysSessions();
+    toast.success(`Session saved! +${workDuration} minutes`);
+  }, [user?.id, selectedCourse, courses, workDuration, sessionNotes, loadTodaysSessions]);
+
+  const handleTimerComplete = useCallback(() => {
+    if (!isBreak) {
+      // Work session completed
+      saveSession();
+
+      if (currentSession % sessionsUntilLongBreak === 0) {
+        toast.success('Great work! Time for a long break!');
+        setTime(longBreak * 60);
+        setIsBreak(true);
+      } else {
+        toast.success('Session completed! Take a short break.');
+        setTime(shortBreak * 60);
+        setIsBreak(true);
+      }
+      setCurrentSession(prev => prev + 1);
+    } else {
+      toast.info('Break over! Ready for the next session?');
+      setTime(workDuration * 60);
+      setIsBreak(false);
+    }
+
+    setIsActive(false);
+    setIsPaused(false);
+  }, [isBreak, currentSession, sessionsUntilLongBreak, longBreak, shortBreak, workDuration, saveSession]);
 
   useEffect(() => {
     if (isActive && !isPaused) {
@@ -60,109 +124,13 @@ const StudyTimer = () => {
         clearInterval(intervalRef.current);
       }
     }
-    
+
     return () => {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
       }
     };
-  }, [isActive, isPaused]);
-
-  useEffect(() => {
-    if (selectedCourse) {
-      fetchAssignments(selectedCourse);
-    }
-  }, [selectedCourse]);
-
-  const fetchCourses = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get('/api/courses', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setCourses(response.data);
-    } catch (error) {
-      console.error('Error fetching courses:', error);
-    }
-  };
-
-  const fetchAssignments = async (courseId) => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get(`/api/assignments?course=${courseId}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setAssignments(response.data.filter(a => !a.completed));
-    } catch (error) {
-      console.error('Error fetching assignments:', error);
-    }
-  };
-
-  const fetchTodaysSessions = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get('/api/timer/today', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setTodaysSessions(response.data.sessions);
-      setTotalTimeToday(response.data.totalTime);
-    } catch (error) {
-      console.error('Error fetching sessions:', error);
-    }
-  };
-
-  const handleTimerComplete = () => {
-    // Play notification sound
-    audioRef.current.play().catch(e => console.log('Audio play failed:', e));
-    
-    if (!isBreak) {
-      // Work session completed
-      saveSession();
-      setCompletedSessions(prev => prev + 1);
-      
-      if (currentSession % sessionsUntilLongBreak === 0) {
-        // Long break
-        toast.success('Great work! Time for a long break!');
-        setTime(longBreak * 60);
-        setIsBreak(true);
-      } else {
-        // Short break
-        toast.success('Session completed! Take a short break.');
-        setTime(shortBreak * 60);
-        setIsBreak(true);
-      }
-      setCurrentSession(prev => prev + 1);
-    } else {
-      // Break completed
-      toast.info('Break over! Ready for the next session?');
-      setTime(workDuration * 60);
-      setIsBreak(false);
-    }
-    
-    setIsActive(false);
-    setIsPaused(false);
-  };
-
-  const saveSession = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const sessionData = {
-        course: selectedCourse || null,
-        assignment: selectedAssignment || null,
-        duration: workDuration,
-        notes: sessionNotes,
-        completedAt: new Date()
-      };
-      
-      await axios.post('/api/timer/session', sessionData, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      
-      fetchTodaysSessions();
-    } catch (error) {
-      console.error('Error saving session:', error);
-    }
-  };
+  }, [isActive, isPaused, handleTimerComplete]);
 
   const handleStart = () => {
     setIsActive(true);
@@ -207,255 +175,212 @@ const StudyTimer = () => {
   };
 
   const getProgressPercentage = () => {
-    const totalSeconds = isBreak ? 
-      (currentSession % sessionsUntilLongBreak === 0 ? longBreak : shortBreak) * 60 : 
-      workDuration * 60;
+    const totalSeconds = isBreak
+      ? (currentSession % sessionsUntilLongBreak === 0 ? longBreak : shortBreak) * 60
+      : workDuration * 60;
     return ((totalSeconds - time) / totalSeconds) * 100;
   };
 
   return (
-    <Container>
-      <Breadcrumb className="breadcrumb-custom">
-        <Breadcrumb.Item href="/">Dashboard</Breadcrumb.Item>
-        <Breadcrumb.Item active>Study Timer</Breadcrumb.Item>
-      </Breadcrumb>
+    <div className="study-timer-page">
+      <section className="course-detail-header">
+        <h1 className="course-detail-title">
+          {isBreak ? <FaCoffee className="me-3" /> : <FaBrain className="me-3" />}
+          Pomodoro Timer
+        </h1>
+        <p className="course-detail-info">Stay focused and productive with timed study sessions</p>
+      </section>
 
-      <h1 className="mb-4">Pomodoro Study Timer</h1>
+      <Container className="py-4">
+        <Row>
+          <Col lg={8}>
+            {/* Timer Display */}
+            <div className="timer-card">
+              <div className="timer-status">
+                {isBreak ? (
+                  <Badge bg="info" className="timer-badge">
+                    <FaCoffee className="me-2" /> Break Time
+                  </Badge>
+                ) : (
+                  <Badge bg="warning" className="timer-badge">
+                    <FaBrain className="me-2" /> Focus Time
+                  </Badge>
+                )}
+              </div>
 
-      <Row>
-        <Col lg={8}>
-          {/* Timer Display */}
-          <Card className="custom-card">
-            <Card.Body className="text-center py-5">
-              <h3 className="mb-3">
-                {isBreak ? '☕ Break Time' : '📚 Focus Time'}
-              </h3>
-              
               <div className="timer-display">
                 {formatTime(time)}
               </div>
-              
-              <div className="progress mt-4 mb-4" style={{ height: '10px' }}>
-                <div 
-                  className="progress-bar progress-bar-custom"
+
+              <div className="timer-progress">
+                <div
+                  className="timer-progress-bar"
                   style={{ width: `${getProgressPercentage()}%` }}
                 />
               </div>
-              
+
               <div className="timer-controls">
-                {!isActive && (
-                  <Button 
-                    className="btn-primary-custom"
-                    size="lg"
-                    onClick={handleStart}
+                {!isActive ? (
+                  <Button className="timer-btn timer-btn-start" onClick={handleStart}>
+                    <FaPlay className="me-2" /> Start
+                  </Button>
+                ) : (
+                  <Button
+                    className={`timer-btn ${isPaused ? 'timer-btn-resume' : 'timer-btn-pause'}`}
+                    onClick={handlePause}
                   >
-                    Start
+                    {isPaused ? <><FaPlay className="me-2" /> Resume</> : <><FaPause className="me-2" /> Pause</>}
                   </Button>
                 )}
-                
-                {isActive && (
-                  <>
-                    <Button 
-                      variant={isPaused ? 'success' : 'warning'}
-                      size="lg"
-                      onClick={handlePause}
-                    >
-                      {isPaused ? 'Resume' : 'Pause'}
-                    </Button>
-                    <Button 
-                      variant="secondary"
-                      size="lg"
-                      onClick={handleReset}
-                    >
-                      Reset
-                    </Button>
-                  </>
-                )}
-                
-                <Button 
-                  variant="outline-secondary"
-                  size="lg"
-                  onClick={handleSkip}
-                >
-                  Skip
+
+                <Button className="timer-btn timer-btn-reset" onClick={handleReset}>
+                  <FaRedo className="me-2" /> Reset
+                </Button>
+
+                <Button className="timer-btn timer-btn-skip" onClick={handleSkip}>
+                  <FaForward className="me-2" /> Skip
                 </Button>
               </div>
-              
-              <div className="mt-4">
-                <Badge bg="info" className="me-2">
+
+              <div className="timer-session-info">
+                <Badge bg="secondary" className="me-2">
                   Session {currentSession}
                 </Badge>
                 <Badge bg="success">
-                  {completedSessions} Completed Today
+                  {todaysSessions.length} Completed Today
                 </Badge>
               </div>
-            </Card.Body>
-          </Card>
+            </div>
 
-          {/* Session Tracking */}
-          <Card className="custom-card mt-3">
-            <Card.Header className="card-header-custom">
-              <h5 className="mb-0">Track This Session</h5>
-            </Card.Header>
-            <Card.Body>
+            {/* Session Tracking */}
+            <div className="timer-settings-card mt-4">
+              <h5 className="settings-title">Track This Session</h5>
               <Form>
                 <Row>
                   <Col md={6}>
                     <Form.Group className="mb-3">
                       <Form.Label>Course (Optional)</Form.Label>
-                      <Form.Select 
-                        className="form-control-custom"
+                      <Form.Select
                         value={selectedCourse}
                         onChange={(e) => setSelectedCourse(e.target.value)}
                       >
-                        <option value="">Select Course</option>
+                        <option value="">General Study</option>
                         {courses.map(course => (
-                          <option key={course._id} value={course._id}>
+                          <option key={course.id} value={course.id}>
                             {course.code} - {course.name}
                           </option>
                         ))}
                       </Form.Select>
                     </Form.Group>
                   </Col>
-                  
                   <Col md={6}>
                     <Form.Group className="mb-3">
-                      <Form.Label>Assignment (Optional)</Form.Label>
-                      <Form.Select 
-                        className="form-control-custom"
-                        value={selectedAssignment}
-                        onChange={(e) => setSelectedAssignment(e.target.value)}
-                        disabled={!selectedCourse}
-                      >
-                        <option value="">Select Assignment</option>
-                        {assignments.map(assignment => (
-                          <option key={assignment._id} value={assignment._id}>
-                            {assignment.title}
-                          </option>
-                        ))}
-                      </Form.Select>
+                      <Form.Label>Session Notes (Optional)</Form.Label>
+                      <Form.Control
+                        type="text"
+                        placeholder="What are you working on?"
+                        value={sessionNotes}
+                        onChange={(e) => setSessionNotes(e.target.value)}
+                      />
                     </Form.Group>
                   </Col>
                 </Row>
-                
-                <Form.Group>
-                  <Form.Label>Session Notes (Optional)</Form.Label>
-                  <Form.Control
-                    as="textarea"
-                    rows={2}
-                    className="form-control-custom"
-                    placeholder="What are you working on?"
-                    value={sessionNotes}
-                    onChange={(e) => setSessionNotes(e.target.value)}
-                  />
-                </Form.Group>
               </Form>
-            </Card.Body>
-          </Card>
-        </Col>
+            </div>
+          </Col>
 
-        <Col lg={4}>
-          {/* Timer Settings */}
-          <Card className="custom-card">
-            <Card.Header className="card-header-custom">
-              <h5 className="mb-0">Timer Settings</h5>
-            </Card.Header>
-            <Card.Body>
+          <Col lg={4}>
+            {/* Timer Settings */}
+            <div className="timer-settings-card">
+              <h5 className="settings-title">Timer Settings</h5>
               <Form>
                 <Form.Group className="mb-3">
                   <Form.Label>Work Duration (minutes)</Form.Label>
                   <Form.Control
                     type="number"
-                    className="form-control-custom"
                     value={workDuration}
                     onChange={(e) => {
-                      setWorkDuration(parseInt(e.target.value));
+                      const val = parseInt(e.target.value) || 25;
+                      setWorkDuration(val);
                       if (!isActive && !isBreak) {
-                        setTime(parseInt(e.target.value) * 60);
+                        setTime(val * 60);
                       }
                     }}
                     min="1"
                     max="60"
                   />
                 </Form.Group>
-                
+
                 <Form.Group className="mb-3">
                   <Form.Label>Short Break (minutes)</Form.Label>
                   <Form.Control
                     type="number"
-                    className="form-control-custom"
                     value={shortBreak}
-                    onChange={(e) => setShortBreak(parseInt(e.target.value))}
+                    onChange={(e) => setShortBreak(parseInt(e.target.value) || 5)}
                     min="1"
                     max="30"
                   />
                 </Form.Group>
-                
+
                 <Form.Group className="mb-3">
                   <Form.Label>Long Break (minutes)</Form.Label>
                   <Form.Control
                     type="number"
-                    className="form-control-custom"
                     value={longBreak}
-                    onChange={(e) => setLongBreak(parseInt(e.target.value))}
+                    onChange={(e) => setLongBreak(parseInt(e.target.value) || 15)}
                     min="5"
                     max="60"
                   />
                 </Form.Group>
-                
+
                 <Form.Group>
                   <Form.Label>Sessions Until Long Break</Form.Label>
                   <Form.Control
                     type="number"
-                    className="form-control-custom"
                     value={sessionsUntilLongBreak}
-                    onChange={(e) => setSessionsUntilLongBreak(parseInt(e.target.value))}
+                    onChange={(e) => setSessionsUntilLongBreak(parseInt(e.target.value) || 4)}
                     min="2"
                     max="10"
                   />
                 </Form.Group>
               </Form>
-            </Card.Body>
-          </Card>
+            </div>
 
-          {/* Today's Stats */}
-          <Card className="custom-card mt-3">
-            <Card.Header className="card-header-custom">
-              <h5 className="mb-0">Today's Progress</h5>
-            </Card.Header>
-            <Card.Body>
-              <div className="text-center mb-3">
-                <div className="stat-number">{formatTotalTime(totalTimeToday)}</div>
+            {/* Today's Stats */}
+            <div className="timer-settings-card mt-4">
+              <h5 className="settings-title">Today's Progress</h5>
+              <div className="today-stats">
+                <div className="stat-value">{formatTotalTime(totalTimeToday)}</div>
                 <div className="stat-label">Total Study Time</div>
               </div>
-              
-              <h6 className="mb-2">Recent Sessions:</h6>
-              <ListGroup variant="flush">
-                {todaysSessions.slice(0, 5).map((session, index) => (
-                  <ListGroup.Item key={index} className="px-0">
-                    <div className="d-flex justify-content-between">
-                      <span>
-                        {session.courseName || 'General Study'}
-                        {session.assignmentTitle && (
-                          <small className="d-block text-muted">
-                            {session.assignmentTitle}
-                          </small>
+
+              <h6 className="mt-4 mb-3">Recent Sessions:</h6>
+              <ListGroup variant="flush" className="sessions-list">
+                {todaysSessions.slice(0, 5).map((session) => (
+                  <ListGroup.Item key={session.id} className="session-item">
+                    <div className="d-flex justify-content-between align-items-center">
+                      <div>
+                        <span className="session-course">{session.courseName}</span>
+                        {session.notes && (
+                          <small className="d-block text-muted">{session.notes}</small>
                         )}
-                      </span>
-                      <Badge bg="secondary">{session.duration}m</Badge>
+                      </div>
+                      <Badge bg="secondary">{session.duration_minutes}m</Badge>
                     </div>
                   </ListGroup.Item>
                 ))}
               </ListGroup>
-              
+
               {todaysSessions.length === 0 && (
-                <p className="text-muted text-center">No sessions yet today</p>
+                <p className="text-muted text-center py-3">No sessions yet today. Start studying!</p>
               )}
-            </Card.Body>
-          </Card>
-        </Col>
-      </Row>
-    </Container>
+            </div>
+          </Col>
+        </Row>
+      </Container>
+
+      <Footer />
+    </div>
   );
 };
 

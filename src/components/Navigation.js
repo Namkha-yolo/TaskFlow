@@ -1,15 +1,17 @@
 import React from 'react';
-import { Navbar, Nav, Container, NavDropdown, Badge } from 'react-bootstrap';
+import { Navbar, Nav, Container } from 'react-bootstrap';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { toast } from 'react-toastify';
+import { FaBook } from 'react-icons/fa';
+import { useAuth } from '../context/AuthContext';
 
-const Navigation = ({ user, setUser }) => {
+const Navigation = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { user, logout, isAuthenticated } = useAuth();
 
-  const handleLogout = () => {
-    localStorage.removeItem('token');
-    setUser(null);
+  const handleLogout = async () => {
+    await logout();
     toast.success('Logged out successfully');
     navigate('/login');
   };
@@ -19,84 +21,70 @@ const Navigation = ({ user, setUser }) => {
   };
 
   return (
-    <Navbar className="navbar-custom" variant="dark" expand="lg" sticky="top">
+    <Navbar className="navbar-taskflow" variant="dark" expand="lg" sticky="top">
       <Container>
-        <Navbar.Brand as={Link} to="/">
-          📚 TaskFlow
+        <Navbar.Brand as={Link} to={isAuthenticated ? "/dashboard" : "/"}>
+          <FaBook className="brand-icon me-2" />
+          TaskFlow
         </Navbar.Brand>
-        
+
         <Navbar.Toggle aria-controls="navbar-nav" />
-        
+
         <Navbar.Collapse id="navbar-nav">
-          {user ? (
+          {isAuthenticated ? (
             <>
-              <Nav className="me-auto">
+              <Nav className="mx-auto">
                 <Nav.Link as={Link} to="/dashboard" className={isActive('/dashboard')}>
-                  Dashboard
+                  Overview
                 </Nav.Link>
                 <Nav.Link as={Link} to="/courses" className={isActive('/courses')}>
-                  Courses
+                  Schedule
                 </Nav.Link>
                 <Nav.Link as={Link} to="/assignments" className={isActive('/assignments')}>
                   Assignments
                 </Nav.Link>
-                <Nav.Link as={Link} to="/syllabus-upload" className={isActive('/syllabus-upload')}>
-                  Upload Syllabus
-                </Nav.Link>
-                <NavDropdown title="Tools" id="tools-dropdown">
-                  <NavDropdown.Item as={Link} to="/grade-calculator">
-                    Grade Calculator
-                  </NavDropdown.Item>
-                  <NavDropdown.Item as={Link} to="/study-timer">
-                    Study Timer
-                  </NavDropdown.Item>
-                </NavDropdown>
               </Nav>
-              
+
               <Nav>
-                <NavDropdown 
-                  title={
-                    <span>
-                      {user.avatar && (
-                        <img 
-                          src={user.avatar} 
-                          alt={user.name}
-                          style={{
-                            width: '24px',
-                            height: '24px',
-                            borderRadius: '50%',
-                            marginRight: '8px'
-                          }}
-                        />
-                      )}
-                      {user.name}
-                    </span>
-                  } 
-                  id="user-dropdown"
-                  align="end"
+                <div
+                  className="user-avatar"
+                  onClick={handleLogout}
+                  style={{ cursor: 'pointer' }}
+                  title="Click to logout"
                 >
-                  <NavDropdown.Item as={Link} to="/profile">
-                    Profile
-                  </NavDropdown.Item>
-                  <NavDropdown.Item as={Link} to="/settings">
-                    Settings
-                  </NavDropdown.Item>
-                  <NavDropdown.Divider />
-                  <NavDropdown.Item onClick={handleLogout}>
-                    Logout
-                  </NavDropdown.Item>
-                </NavDropdown>
+                  {user?.avatar_url ? (
+                    <img
+                      src={user.avatar_url}
+                      alt={user.name}
+                      className="user-avatar"
+                    />
+                  ) : (
+                    <div className="user-avatar d-flex align-items-center justify-content-center">
+                      {user?.name?.charAt(0).toUpperCase() || user?.email?.charAt(0).toUpperCase() || 'U'}
+                    </div>
+                  )}
+                </div>
               </Nav>
             </>
           ) : (
-            <Nav className="ms-auto">
-              <Nav.Link as={Link} to="/login" className={isActive('/login')}>
-                Login
-              </Nav.Link>
-              <Nav.Link as={Link} to="/register" className={isActive('/register')}>
-                <Badge bg="warning" text="dark">Sign Up</Badge>
-              </Nav.Link>
-            </Nav>
+            <>
+              <Nav className="mx-auto">
+                <Nav.Link as={Link} to="/" className={isActive('/')}>
+                  Overview
+                </Nav.Link>
+                <Nav.Link as={Link} to="/features">
+                  Schedule
+                </Nav.Link>
+                <Nav.Link as={Link} to="/about">
+                  Assignments
+                </Nav.Link>
+              </Nav>
+              <Nav>
+                <Nav.Link as={Link} to="/login" className="btn-login">
+                  Log in
+                </Nav.Link>
+              </Nav>
+            </>
           )}
         </Navbar.Collapse>
       </Container>

@@ -1,36 +1,43 @@
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const supabase = require('../config/supabase');
 
 const auth = async (req, res, next) => {
   try {
     // Get token from header
     const token = req.header('Authorization')?.replace('Bearer ', '');
-    
+
     if (!token) {
-      throw new Error();
+      return res.status(401).json({ message: 'No token, authorization denied' });
     }
-    
+
     // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-    // Find user
-    const user = await User.findById(decoded.id).select('-password');
-    
-    if (!user) {
-      throw new Error();
+
+    // Find user in Supabase
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, name, email, school, major, year, avatar_url')
+      .eq('id', decoded.id)
+      .single();
+
+    if (error || !user) {
+      return res.status(401).json({ message: 'Token is not valid' });
     }
-    
-    // Update last active
-    user.lastActive = Date.now();
-    await user.save();
-    
+
     // Attach user to request
     req.user = user;
     req.token = token;
-    
+
     next();
   } catch (error) {
-    res.status(401).json({ error: 'Please authenticate' });
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ message: 'Token is not valid' });
+    }
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({ message: 'Token has expired' });
+    }
+    console.error('Auth middleware error:', error);
+    res.status(401).json({ message: 'Please authenticate' });
   }
 };
 
@@ -38,19 +45,22 @@ const auth = async (req, res, next) => {
 const optionalAuth = async (req, res, next) => {
   try {
     const token = req.header('Authorization')?.replace('Bearer ', '');
-    
+
     if (token) {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      const user = await User.findById(decoded.id).select('-password');
-      
-      if (user) {
-        user.lastActive = Date.now();
-        await user.save();
+
+      const { data: user, error } = await supabase
+        .from('users')
+        .select('id, name, email, school, major, year, avatar_url')
+        .eq('id', decoded.id)
+        .single();
+
+      if (!error && user) {
         req.user = user;
         req.token = token;
       }
     }
-    
+
     next();
   } catch (error) {
     // Continue without auth

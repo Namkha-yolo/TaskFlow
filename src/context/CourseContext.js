@@ -1,5 +1,5 @@
-import React, { createContext, useState, useContext, useEffect } from 'react';
-import axios from 'axios';
+import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
+import { supabase } from '../config/supabase';
 import { useAuth } from './AuthContext';
 
 const CourseContext = createContext();
@@ -14,113 +14,124 @@ export const useCourses = () => {
 
 export const CourseProvider = ({ children }) => {
   const [courses, setCourses] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const { token, isAuthenticated } = useAuth();
+  const [loading, setLoading] = useState(true);
+  const { user } = useAuth();
 
-  useEffect(() => {
-    if (isAuthenticated && token) {
-      fetchCourses();
+  const fetchCourses = useCallback(async () => {
+    if (!user?.id) {
+      setCourses([]);
+      setLoading(false);
+      return;
     }
-  }, [isAuthenticated, token]);
 
-  const fetchCourses = async () => {
-    setLoading(true);
-    setError(null);
     try {
-      const response = await axios.get('/api/courses', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setCourses(response.data);
-    } catch (error) {
-      console.error('Error fetching courses:', error);
-      setError('Failed to load courses');
+      const { data, error } = await supabase
+        .from('courses')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setCourses(data || []);
+    } catch (err) {
+      console.error('Error fetching courses:', err);
+      setCourses([]);
     } finally {
       setLoading(false);
     }
-  };
+  }, [user?.id]);
+
+  useEffect(() => {
+    fetchCourses();
+  }, [fetchCourses]);
 
   const addCourse = async (courseData) => {
+    if (!user?.id) return { success: false, error: 'Not authenticated' };
+
     try {
-      const response = await axios.post('/api/courses', courseData, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      const newCourse = response.data;
-      setCourses([...courses, newCourse]);
-      return { success: true, course: newCourse };
-    } catch (error) {
-      return { 
-        success: false, 
-        error: error.response?.data?.message || 'Failed to add course' 
-      };
+      const { data, error } = await supabase
+        .from('courses')
+        .insert({
+          user_id: user.id,
+          name: courseData.name,
+          code: courseData.code,
+          instructor: courseData.instructor || null,
+          semester: courseData.semester,
+          year: parseInt(courseData.year) || new Date().getFullYear(),
+          credits: courseData.credits ? parseInt(courseData.credits) : null,
+          color: courseData.color || '#3D2E1F',
+          location: courseData.location || null
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+      setCourses(prev => [data, ...prev]);
+      return { success: true, course: data };
+    } catch (err) {
+      console.error('Error adding course:', err);
+      return { success: false, error: err.message };
     }
   };
 
   const updateCourse = async (courseId, updates) => {
+    if (!user?.id) return { success: false, error: 'Not authenticated' };
+
     try {
-      const response = await axios.put(`/api/courses/${courseId}`, updates, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      const updatedCourse = response.data;
-      setCourses(courses.map(course => 
-        course._id === courseId ? updatedCourse : course
-      ));
-      return { success: true, course: updatedCourse };
-    } catch (error) {
-      return { 
-        success: false, 
-        error: error.response?.data?.message || 'Failed to update course' 
-      };
+      const { data, error } = await supabase
+        .from('courses')
+        .update({
+          name: updates.name,
+          code: updates.code,
+          instructor: updates.instructor || null,
+          semester: updates.semester,
+          year: parseInt(updates.year) || new Date().getFullYear(),
+          credits: updates.credits ? parseInt(updates.credits) : null,
+          color: updates.color || '#3D2E1F',
+          location: updates.location || null
+        })
+        .eq('id', courseId)
+        .eq('user_id', user.id)
+        .select()
+        .single();
+
+      if (error) throw error;
+      setCourses(prev => prev.map(c => c.id === courseId ? data : c));
+      return { success: true, course: data };
+    } catch (err) {
+      console.error('Error updating course:', err);
+      return { success: false, error: err.message };
     }
   };
 
   const deleteCourse = async (courseId) => {
+    if (!user?.id) return { success: false, error: 'Not authenticated' };
+
     try {
-      await axios.delete(`/api/courses/${courseId}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setCourses(courses.filter(course => course._id !== courseId));
+      const { error } = await supabase
+        .from('courses')
+        .delete()
+        .eq('id', courseId)
+        .eq('user_id', user.id);
+
+      if (error) throw error;
+      setCourses(prev => prev.filter(c => c.id !== courseId));
       return { success: true };
-    } catch (error) {
-      return { 
-        success: false, 
-        error: error.response?.data?.message || 'Failed to delete course' 
-      };
+    } catch (err) {
+      console.error('Error deleting course:', err);
+      return { success: false, error: err.message };
     }
-  };
-
-  const getCourseById = (courseId) => {
-    return courses.find(course => course._id === courseId);
-  };
-
-  const getCourseStats = async (courseId) => {
-    try {
-      const response = await axios.get(`/api/courses/${courseId}/stats`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      return { success: true, stats: response.data };
-    } catch (error) {
-      return { 
-        success: false, 
-        error: error.response?.data?.message || 'Failed to get course statistics' 
-      };
-    }
-  };
-
-  const value = {
-    courses,
-    loading,
-    error,
-    fetchCourses,
-    addCourse,
-    updateCourse,
-    deleteCourse,
-    getCourseById,
-    getCourseStats
   };
 
   return (
-    <CourseContext.Provider value={value}>
+    <CourseContext.Provider value={{
+      courses,
+      loading,
+      fetchCourses,
+      addCourse,
+      updateCourse,
+      deleteCourse
+    }}>
       {children}
     </CourseContext.Provider>
   );

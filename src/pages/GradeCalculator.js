@@ -1,200 +1,79 @@
 import React, { useState, useEffect } from 'react';
-import { Container, Row, Col, Card, Form, Button, Table, Alert, Badge, Breadcrumb, ProgressBar } from 'react-bootstrap';
-import { Pie, Bar } from 'react-chartjs-2';
-import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement } from 'chart.js';
-import { toast } from 'react-toastify';
-import axios from 'axios';
-
-// Register ChartJS components
-ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement);
+import { Container, Row, Col, Form, Button, Table, Alert, Badge, ProgressBar } from 'react-bootstrap';
+import { FaCalculator, FaPlus, FaTrash } from 'react-icons/fa';
+import { useAuth } from '../context/AuthContext';
+import { useCourses } from '../context/CourseContext';
+import Footer from '../components/Footer';
 
 const GradeCalculator = () => {
-  const [courses, setCourses] = useState([]);
+  const { user } = useAuth();
+  const { courses } = useCourses();
   const [selectedCourse, setSelectedCourse] = useState('');
-  const [courseData, setCourseData] = useState(null);
-  const [assignments, setAssignments] = useState([]);
-  const [currentGrade, setCurrentGrade] = useState(null);
-  const [projectedGrade, setProjectedGrade] = useState(null);
   const [targetGrade, setTargetGrade] = useState(90);
-  const [requiredGrades, setRequiredGrades] = useState([]);
-  const [whatIfScenarios, setWhatIfScenarios] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [gradeItems, setGradeItems] = useState([]);
+  const [currentGrade, setCurrentGrade] = useState(null);
 
+  // Load saved grade items from localStorage
   useEffect(() => {
-    fetchCourses();
-  }, []);
+    if (selectedCourse && user?.id) {
+      const saved = localStorage.getItem(`taskflow_grades_${user.id}_${selectedCourse}`);
+      if (saved) {
+        setGradeItems(JSON.parse(saved));
+      } else {
+        // Start with empty items
+        setGradeItems([
+          { id: 1, name: 'Homework', weight: 20, score: '', maxScore: 100 },
+          { id: 2, name: 'Midterm Exam', weight: 25, score: '', maxScore: 100 },
+          { id: 3, name: 'Final Exam', weight: 30, score: '', maxScore: 100 },
+          { id: 4, name: 'Projects', weight: 25, score: '', maxScore: 100 }
+        ]);
+      }
+    }
+  }, [selectedCourse, user?.id]);
 
+  // Calculate grade whenever items change
   useEffect(() => {
-    if (selectedCourse) {
-      fetchCourseData(selectedCourse);
+    calculateGrade();
+    // Save to localStorage
+    if (selectedCourse && user?.id && gradeItems.length > 0) {
+      localStorage.setItem(`taskflow_grades_${user.id}_${selectedCourse}`, JSON.stringify(gradeItems));
     }
-  }, [selectedCourse]);
+    // eslint-disable-next-line
+  }, [gradeItems]);
 
-  const fetchCourses = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get('/api/courses', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setCourses(response.data);
-    } catch (error) {
-      toast.error('Error fetching courses');
+  const calculateGrade = () => {
+    const itemsWithScores = gradeItems.filter(item => item.score !== '' && item.score !== null);
+    if (itemsWithScores.length === 0) {
+      setCurrentGrade(null);
+      return;
     }
-  };
 
-  const fetchCourseData = async (courseId) => {
-    setLoading(true);
-    try {
-      const token = localStorage.getItem('token');
-      const headers = { Authorization: `Bearer ${token}` };
-      
-      const [courseRes, assignmentsRes] = await Promise.all([
-        axios.get(`/api/courses/${courseId}`, { headers }),
-        axios.get(`/api/assignments?course=${courseId}`, { headers })
-      ]);
-      
-      setCourseData(courseRes.data);
-      setAssignments(assignmentsRes.data);
-      setTargetGrade(courseRes.data.targetGrade || 90);
-      
-      calculateGrades(assignmentsRes.data);
-      setLoading(false);
-    } catch (error) {
-      toast.error('Error fetching course data');
-      setLoading(false);
-    }
-  };
-
-  const calculateGrades = (assignmentsList) => {
-    // Calculate current grade based on completed assignments
-    const completedAssignments = assignmentsList.filter(a => a.gradeReceived !== null);
-    let earnedPoints = 0;
+    let totalWeightedScore = 0;
     let totalWeight = 0;
-    
-    completedAssignments.forEach(assignment => {
-      const percentage = (assignment.gradeReceived / assignment.maxGrade) * 100;
-      earnedPoints += percentage * (assignment.gradeWeight / 100);
-      totalWeight += assignment.gradeWeight;
+
+    itemsWithScores.forEach(item => {
+      const percentage = (parseFloat(item.score) / parseFloat(item.maxScore)) * 100;
+      totalWeightedScore += percentage * (parseFloat(item.weight) / 100);
+      totalWeight += parseFloat(item.weight);
     });
-    
-    const current = totalWeight > 0 ? (earnedPoints / totalWeight) * 100 : null;
-    setCurrentGrade(current);
-    
-    // Calculate projected grade (assuming current performance continues)
-    const remainingWeight = 100 - totalWeight;
-    const projected = current !== null ? 
-      (earnedPoints + (current / 100) * remainingWeight) : null;
-    setProjectedGrade(projected);
-    
-    // Calculate required grades for remaining assignments
-    calculateRequiredGrades(assignmentsList, earnedPoints, totalWeight);
-    
-    // Generate what-if scenarios
-    generateWhatIfScenarios(assignmentsList, earnedPoints, totalWeight);
+
+    const grade = totalWeight > 0 ? (totalWeightedScore / totalWeight) * 100 : 0;
+    setCurrentGrade(grade);
   };
 
-  const calculateRequiredGrades = (assignmentsList, earnedPoints, completedWeight) => {
-    const incompleteAssignments = assignmentsList.filter(
-      a => a.gradeReceived === null && a.gradeWeight
-    );
-    
-    const remainingWeight = incompleteAssignments.reduce(
-      (sum, a) => sum + a.gradeWeight, 0
-    );
-    
-    if (remainingWeight === 0) {
-      setRequiredGrades([]);
-      return;
-    }
-    
-    // Calculate what's needed for target grade
-    const pointsNeeded = targetGrade - earnedPoints;
-    const requiredAverage = (pointsNeeded / remainingWeight) * 100;
-    
-    const requirements = incompleteAssignments.map(assignment => ({
-      ...assignment,
-      requiredGrade: Math.min(100, Math.max(0, requiredAverage))
-    }));
-    
-    setRequiredGrades(requirements);
+  const addItem = () => {
+    const newId = Math.max(...gradeItems.map(i => i.id), 0) + 1;
+    setGradeItems([...gradeItems, { id: newId, name: '', weight: 0, score: '', maxScore: 100 }]);
   };
 
-  const generateWhatIfScenarios = (assignmentsList, earnedPoints, completedWeight) => {
-    const incompleteAssignments = assignmentsList.filter(
-      a => a.gradeReceived === null && a.gradeWeight
-    );
-    
-    const remainingWeight = incompleteAssignments.reduce(
-      (sum, a) => sum + a.gradeWeight, 0
-    );
-    
-    if (remainingWeight === 0) {
-      setWhatIfScenarios([]);
-      return;
-    }
-    
-    const scenarios = [
-      {
-        name: 'Perfect Scores',
-        description: 'If you get 100% on all remaining assignments',
-        grade: earnedPoints + remainingWeight,
-        color: 'success'
-      },
-      {
-        name: 'Good Performance',
-        description: 'If you maintain 85% on remaining work',
-        grade: earnedPoints + (0.85 * remainingWeight),
-        color: 'info'
-      },
-      {
-        name: 'Average Performance',
-        description: 'If you maintain 75% on remaining work',
-        grade: earnedPoints + (0.75 * remainingWeight),
-        color: 'warning'
-      },
-      {
-        name: 'Minimum Passing',
-        description: 'If you get 60% on remaining work',
-        grade: earnedPoints + (0.60 * remainingWeight),
-        color: 'danger'
-      }
-    ];
-    
-    setWhatIfScenarios(scenarios);
+  const removeItem = (id) => {
+    setGradeItems(gradeItems.filter(item => item.id !== id));
   };
 
-  const updateAssignmentGrade = async (assignmentId, grade, maxGrade) => {
-    try {
-      const token = localStorage.getItem('token');
-      await axios.patch(`/api/assignments/${assignmentId}`, 
-        { gradeReceived: grade, maxGrade: maxGrade },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      
-      // Refresh data
-      fetchCourseData(selectedCourse);
-      toast.success('Grade updated successfully');
-    } catch (error) {
-      toast.error('Error updating grade');
-    }
-  };
-
-  const handleGradeChange = (assignmentId, value, field) => {
-    const updatedAssignments = assignments.map(a => {
-      if (a._id === assignmentId) {
-        return { ...a, [field]: parseFloat(value) || null };
-      }
-      return a;
-    });
-    setAssignments(updatedAssignments);
-    calculateGrades(updatedAssignments);
-  };
-
-  const getGradeColor = (grade) => {
-    if (grade >= 90) return 'success';
-    if (grade >= 80) return 'info';
-    if (grade >= 70) return 'warning';
-    return 'danger';
+  const updateItem = (id, field, value) => {
+    setGradeItems(gradeItems.map(item =>
+      item.id === id ? { ...item, [field]: value } : item
+    ));
   };
 
   const getLetterGrade = (percentage) => {
@@ -212,365 +91,304 @@ const GradeCalculator = () => {
     return 'F';
   };
 
-  // Chart data for grade distribution
-  const gradeDistributionData = {
-    labels: assignments.filter(a => a.gradeWeight).map(a => a.title),
-    datasets: [{
-      label: 'Grade Weight (%)',
-      data: assignments.filter(a => a.gradeWeight).map(a => a.gradeWeight),
-      backgroundColor: [
-        '#6B46C1',
-        '#9F7AEA',
-        '#FFD700',
-        '#48BB78',
-        '#4299E1',
-        '#ED8936'
-      ],
-      borderWidth: 2,
-      borderColor: '#fff'
-    }]
+  const getGradeColor = (grade) => {
+    if (grade >= 90) return 'success';
+    if (grade >= 80) return 'info';
+    if (grade >= 70) return 'warning';
+    return 'danger';
   };
 
-  const gradeProgressData = {
-    labels: ['Earned', 'Remaining'],
-    datasets: [{
-      label: 'Grade Progress',
-      data: [
-        currentGrade || 0,
-        100 - (currentGrade || 0)
-      ],
-      backgroundColor: ['#48BB78', '#E2E8F0']
-    }]
+  const calculateRequiredGrade = () => {
+    const itemsWithScores = gradeItems.filter(item => item.score !== '' && item.score !== null);
+    const itemsWithoutScores = gradeItems.filter(item => item.score === '' || item.score === null);
+
+    if (itemsWithoutScores.length === 0) return null;
+
+    let earnedPoints = 0;
+    itemsWithScores.forEach(item => {
+      const percentage = (parseFloat(item.score) / parseFloat(item.maxScore)) * 100;
+      earnedPoints += percentage * (parseFloat(item.weight) / 100);
+    });
+
+    const remainingWeight = itemsWithoutScores.reduce((sum, item) => sum + parseFloat(item.weight || 0), 0);
+    if (remainingWeight === 0) return null;
+
+    const neededPoints = targetGrade - earnedPoints;
+    const requiredAverage = (neededPoints / remainingWeight) * 100;
+
+    return Math.min(100, Math.max(0, requiredAverage));
   };
+
+  const totalWeight = gradeItems.reduce((sum, item) => sum + (parseFloat(item.weight) || 0), 0);
+  const requiredGrade = calculateRequiredGrade();
+
+  const selectedCourseName = courses.find(c => c.id === selectedCourse)?.name || '';
 
   return (
-    <Container>
-      <Breadcrumb className="breadcrumb-custom">
-        <Breadcrumb.Item href="/">Dashboard</Breadcrumb.Item>
-        <Breadcrumb.Item active>Grade Calculator</Breadcrumb.Item>
-      </Breadcrumb>
+    <div className="grade-calculator-page">
+      <section className="course-detail-header">
+        <h1 className="course-detail-title">Grade Calculator</h1>
+        <p className="course-detail-info">Calculate your current and projected grades</p>
+      </section>
 
-      <h1 className="mb-4">Grade Calculator</h1>
-
-      {/* Course Selection */}
-      <Card className="custom-card">
-        <Card.Body>
-          <Form>
-            <Row>
-              <Col md={8}>
-                <Form.Group>
-                  <Form.Label>Select Course</Form.Label>
-                  <Form.Select
-                    className="form-control-custom"
-                    value={selectedCourse}
-                    onChange={(e) => setSelectedCourse(e.target.value)}
-                  >
-                    <option value="">Choose a course...</option>
-                    {courses.map(course => (
-                      <option key={course._id} value={course._id}>
-                        {course.code} - {course.name}
-                      </option>
-                    ))}
-                  </Form.Select>
-                </Form.Group>
-              </Col>
-              <Col md={4}>
-                <Form.Group>
-                  <Form.Label>Target Grade (%)</Form.Label>
-                  <Form.Control
-                    type="number"
-                    className="form-control-custom"
-                    value={targetGrade}
-                    onChange={(e) => {
-                      setTargetGrade(parseFloat(e.target.value));
-                      if (assignments.length > 0) {
-                        calculateGrades(assignments);
-                      }
-                    }}
-                    min="0"
-                    max="100"
-                    step="1"
-                  />
-                </Form.Group>
-              </Col>
-            </Row>
-          </Form>
-        </Card.Body>
-      </Card>
-
-      {selectedCourse && !loading && (
-        <>
-          {/* Current Grade Summary */}
-          <Row className="mt-4">
+      <Container className="py-4">
+        {/* Course Selection */}
+        <div className="grade-calc-card mb-4">
+          <Row className="align-items-end">
+            <Col md={6}>
+              <Form.Group>
+                <Form.Label>Select Course</Form.Label>
+                <Form.Select
+                  value={selectedCourse}
+                  onChange={(e) => setSelectedCourse(e.target.value)}
+                >
+                  <option value="">Choose a course...</option>
+                  {courses.map(course => (
+                    <option key={course.id} value={course.id}>
+                      {course.code} - {course.name}
+                    </option>
+                  ))}
+                </Form.Select>
+              </Form.Group>
+            </Col>
             <Col md={3}>
-              <Card className="custom-card text-center">
-                <Card.Body>
-                  <h6 className="text-muted mb-2">Current Grade</h6>
-                  <div className="stat-number">
-                    {currentGrade ? `${currentGrade.toFixed(1)}%` : 'N/A'}
+              <Form.Group>
+                <Form.Label>Target Grade (%)</Form.Label>
+                <Form.Control
+                  type="number"
+                  value={targetGrade}
+                  onChange={(e) => setTargetGrade(parseFloat(e.target.value) || 0)}
+                  min="0"
+                  max="100"
+                />
+              </Form.Group>
+            </Col>
+            <Col md={3}>
+              {totalWeight !== 100 && (
+                <Alert variant="warning" className="mb-0 py-2">
+                  Total weight: {totalWeight}% (should be 100%)
+                </Alert>
+              )}
+            </Col>
+          </Row>
+        </div>
+
+        {selectedCourse && (
+          <>
+            {/* Grade Summary Cards */}
+            <Row className="mb-4">
+              <Col md={4}>
+                <div className="grade-summary-card">
+                  <h6>Current Grade</h6>
+                  <div className="grade-value">
+                    {currentGrade !== null ? `${currentGrade.toFixed(1)}%` : '--'}
                   </div>
-                  {currentGrade && (
-                    <Badge bg={getGradeColor(currentGrade)}>
+                  {currentGrade !== null && (
+                    <Badge bg={getGradeColor(currentGrade)} className="grade-badge">
                       {getLetterGrade(currentGrade)}
                     </Badge>
                   )}
-                </Card.Body>
-              </Card>
-            </Col>
-            
-            <Col md={3}>
-              <Card className="custom-card text-center">
-                <Card.Body>
-                  <h6 className="text-muted mb-2">Projected Grade</h6>
-                  <div className="stat-number">
-                    {projectedGrade ? `${projectedGrade.toFixed(1)}%` : 'N/A'}
-                  </div>
-                  {projectedGrade && (
-                    <Badge bg={getGradeColor(projectedGrade)}>
-                      {getLetterGrade(projectedGrade)}
-                    </Badge>
-                  )}
-                </Card.Body>
-              </Card>
-            </Col>
-            
-            <Col md={3}>
-              <Card className="custom-card text-center">
-                <Card.Body>
-                  <h6 className="text-muted mb-2">Target Grade</h6>
-                  <div className="stat-number">{targetGrade}%</div>
-                  <Badge bg={getGradeColor(targetGrade)}>
+                </div>
+              </Col>
+              <Col md={4}>
+                <div className="grade-summary-card">
+                  <h6>Target Grade</h6>
+                  <div className="grade-value">{targetGrade}%</div>
+                  <Badge bg={getGradeColor(targetGrade)} className="grade-badge">
                     {getLetterGrade(targetGrade)}
                   </Badge>
-                </Card.Body>
-              </Card>
-            </Col>
-            
-            <Col md={3}>
-              <Card className="custom-card text-center">
-                <Card.Body>
-                  <h6 className="text-muted mb-2">Completion</h6>
-                  <div className="stat-number">
-                    {assignments.length > 0 
-                      ? `${assignments.filter(a => a.completed).length}/${assignments.length}`
-                      : '0/0'
-                    }
+                </div>
+              </Col>
+              <Col md={4}>
+                <div className="grade-summary-card">
+                  <h6>Required on Remaining</h6>
+                  <div className="grade-value">
+                    {requiredGrade !== null ? `${requiredGrade.toFixed(1)}%` : '--'}
                   </div>
-                  <Badge bg="secondary">Assignments</Badge>
-                </Card.Body>
-              </Card>
-            </Col>
-          </Row>
+                  {requiredGrade !== null && requiredGrade > 100 && (
+                    <Badge bg="danger" className="grade-badge">Not Achievable</Badge>
+                  )}
+                  {requiredGrade !== null && requiredGrade <= 100 && (
+                    <Badge bg={getGradeColor(requiredGrade)} className="grade-badge">
+                      {getLetterGrade(requiredGrade)}
+                    </Badge>
+                  )}
+                </div>
+              </Col>
+            </Row>
 
-          <Row className="mt-4">
-            {/* Grade Input Table */}
-            <Col lg={8}>
-              <Card className="custom-card">
-                <Card.Header className="card-header-custom">
-                  <h5 className="mb-0">Assignment Grades</h5>
-                </Card.Header>
-                <Card.Body>
-                  <Table responsive hover>
-                    <thead>
-                      <tr>
-                        <th>Assignment</th>
-                        <th>Weight</th>
-                        <th>Score</th>
-                        <th>Max</th>
-                        <th>Percentage</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {assignments.map(assignment => (
-                        <tr key={assignment._id}>
-                          <td>
-                            <div>
-                              {assignment.title}
-                              <small className="d-block text-muted">
-                                Due: {new Date(assignment.dueDate).toLocaleDateString()}
-                              </small>
-                            </div>
-                          </td>
-                          <td>
-                            <Badge bg="info">
-                              {assignment.gradeWeight || 0}%
+            {/* Progress Bar */}
+            {currentGrade !== null && (
+              <div className="grade-calc-card mb-4">
+                <h6 className="mb-3">Grade Progress</h6>
+                <ProgressBar>
+                  <ProgressBar
+                    variant={getGradeColor(currentGrade)}
+                    now={currentGrade}
+                    label={`${currentGrade.toFixed(1)}%`}
+                    key={1}
+                  />
+                </ProgressBar>
+                <div className="d-flex justify-content-between mt-2">
+                  <small className="text-muted">0%</small>
+                  <small className="text-muted">Target: {targetGrade}%</small>
+                  <small className="text-muted">100%</small>
+                </div>
+              </div>
+            )}
+
+            {/* Grade Items Table */}
+            <div className="grade-calc-card">
+              <div className="d-flex justify-content-between align-items-center mb-3">
+                <h5 className="mb-0">
+                  <FaCalculator className="me-2" />
+                  Grade Components - {selectedCourseName}
+                </h5>
+                <Button variant="outline-primary" size="sm" onClick={addItem}>
+                  <FaPlus className="me-1" /> Add Item
+                </Button>
+              </div>
+
+              <Table responsive hover className="grade-table">
+                <thead>
+                  <tr>
+                    <th>Category</th>
+                    <th style={{ width: '100px' }}>Weight (%)</th>
+                    <th style={{ width: '100px' }}>Score</th>
+                    <th style={{ width: '100px' }}>Max</th>
+                    <th style={{ width: '100px' }}>Percentage</th>
+                    <th style={{ width: '60px' }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {gradeItems.map(item => {
+                    const percentage = item.score !== '' && item.maxScore > 0
+                      ? (parseFloat(item.score) / parseFloat(item.maxScore)) * 100
+                      : null;
+                    return (
+                      <tr key={item.id}>
+                        <td>
+                          <Form.Control
+                            type="text"
+                            value={item.name}
+                            onChange={(e) => updateItem(item.id, 'name', e.target.value)}
+                            placeholder="Category name"
+                            size="sm"
+                          />
+                        </td>
+                        <td>
+                          <Form.Control
+                            type="number"
+                            value={item.weight}
+                            onChange={(e) => updateItem(item.id, 'weight', e.target.value)}
+                            min="0"
+                            max="100"
+                            size="sm"
+                          />
+                        </td>
+                        <td>
+                          <Form.Control
+                            type="number"
+                            value={item.score}
+                            onChange={(e) => updateItem(item.id, 'score', e.target.value)}
+                            placeholder="--"
+                            min="0"
+                            size="sm"
+                          />
+                        </td>
+                        <td>
+                          <Form.Control
+                            type="number"
+                            value={item.maxScore}
+                            onChange={(e) => updateItem(item.id, 'maxScore', e.target.value)}
+                            min="1"
+                            size="sm"
+                          />
+                        </td>
+                        <td className="text-center">
+                          {percentage !== null ? (
+                            <Badge bg={getGradeColor(percentage)}>
+                              {percentage.toFixed(1)}%
                             </Badge>
-                          </td>
-                          <td>
-                            <Form.Control
-                              type="number"
-                              size="sm"
-                              value={assignment.gradeReceived || ''}
-                              onChange={(e) => handleGradeChange(assignment._id, e.target.value, 'gradeReceived')}
-                              style={{ width: '80px' }}
-                              min="0"
-                              max={assignment.maxGrade}
-                              step="0.1"
-                            />
-                          </td>
-                          <td>
-                            <Form.Control
-                              type="number"
-                              size="sm"
-                              value={assignment.maxGrade || 100}
-                              onChange={(e) => handleGradeChange(assignment._id, e.target.value, 'maxGrade')}
-                              style={{ width: '80px' }}
-                              min="1"
-                              step="1"
-                            />
-                          </td>
-                          <td>
-                            {assignment.gradeReceived !== null ? (
-                              <Badge bg={getGradeColor((assignment.gradeReceived / assignment.maxGrade) * 100)}>
-                                {((assignment.gradeReceived / assignment.maxGrade) * 100).toFixed(1)}%
-                              </Badge>
-                            ) : (
-                              <span className="text-muted">--</span>
-                            )}
-                          </td>
-                          <td>
-                            <Button
-                              size="sm"
-                              variant="outline-primary"
-                              onClick={() => updateAssignmentGrade(
-                                assignment._id,
-                                assignment.gradeReceived,
-                                assignment.maxGrade
-                              )}
-                              disabled={assignment.gradeReceived === null}
-                            >
-                              Save
-                            </Button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </Table>
-                  
-                  {assignments.length === 0 && (
-                    <Alert variant="info">
-                      No assignments found for this course. Add assignments to start calculating grades.
-                    </Alert>
-                  )}
-                </Card.Body>
-              </Card>
+                          ) : (
+                            <span className="text-muted">--</span>
+                          )}
+                        </td>
+                        <td>
+                          <Button
+                            variant="outline-danger"
+                            size="sm"
+                            onClick={() => removeItem(item.id)}
+                          >
+                            <FaTrash />
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </Table>
 
-              {/* What-If Scenarios */}
-              <Card className="custom-card mt-3">
-                <Card.Header className="card-header-custom">
-                  <h5 className="mb-0">What-If Scenarios</h5>
-                </Card.Header>
-                <Card.Body>
-                  <Row>
-                    {whatIfScenarios.map((scenario, index) => (
-                      <Col md={6} key={index} className="mb-3">
-                        <Card>
-                          <Card.Body>
-                            <h6>{scenario.name}</h6>
-                            <p className="text-muted small mb-2">{scenario.description}</p>
-                            <div className="d-flex align-items-center">
-                              <h4 className="mb-0 me-2">
-                                {scenario.grade.toFixed(1)}%
-                              </h4>
-                              <Badge bg={scenario.color}>
-                                {getLetterGrade(scenario.grade)}
-                              </Badge>
-                            </div>
-                            <ProgressBar 
-                              className="mt-2"
-                              now={scenario.grade}
-                              variant={scenario.color}
-                              style={{ height: '8px' }}
-                            />
-                          </Card.Body>
-                        </Card>
-                      </Col>
-                    ))}
-                  </Row>
-                </Card.Body>
-              </Card>
-            </Col>
+              {gradeItems.length === 0 && (
+                <Alert variant="info" className="text-center">
+                  No grade items. Click "Add Item" to start tracking your grades.
+                </Alert>
+              )}
+            </div>
 
-            {/* Charts and Required Grades */}
-            <Col lg={4}>
-              {/* Grade Distribution Chart */}
-              <Card className="custom-card">
-                <Card.Header className="card-header-custom">
-                  <h5 className="mb-0">Grade Distribution</h5>
-                </Card.Header>
-                <Card.Body>
-                  {assignments.filter(a => a.gradeWeight).length > 0 ? (
-                    <Pie 
-                      data={gradeDistributionData}
-                      options={{
-                        responsive: true,
-                        maintainAspectRatio: true,
-                        plugins: {
-                          legend: {
-                            position: 'bottom',
-                            labels: {
-                              boxWidth: 12
-                            }
-                          }
-                        }
-                      }}
-                    />
-                  ) : (
-                    <Alert variant="info">
-                      No grade weights assigned to assignments yet.
-                    </Alert>
-                  )}
-                </Card.Body>
-              </Card>
+            {/* What-If Scenarios */}
+            <div className="grade-calc-card mt-4">
+              <h5 className="mb-3">What-If Scenarios</h5>
+              <Row>
+                {[
+                  { name: 'Perfect Scores', desc: '100% on remaining', mult: 1.0, color: 'success' },
+                  { name: 'Great Work', desc: '90% on remaining', mult: 0.9, color: 'info' },
+                  { name: 'Good Work', desc: '80% on remaining', mult: 0.8, color: 'warning' },
+                  { name: 'Passing', desc: '70% on remaining', mult: 0.7, color: 'secondary' }
+                ].map((scenario, idx) => {
+                  const itemsWithScores = gradeItems.filter(i => i.score !== '' && i.score !== null);
+                  const itemsWithoutScores = gradeItems.filter(i => i.score === '' || i.score === null);
 
-              {/* Required Grades */}
-              <Card className="custom-card mt-3">
-                <Card.Header className="card-header-custom">
-                  <h5 className="mb-0">Required for {targetGrade}%</h5>
-                </Card.Header>
-                <Card.Body>
-                  {requiredGrades.length > 0 ? (
-                    <ListGroup variant="flush">
-                      {requiredGrades.map((assignment, index) => (
-                        <ListGroup.Item key={index} className="px-0">
-                          <div className="d-flex justify-content-between align-items-start">
-                            <div className="flex-grow-1">
-                              <small className="d-block">{assignment.title}</small>
-                              <Badge 
-                                bg={assignment.requiredGrade > 90 ? 'danger' : 
-                                    assignment.requiredGrade > 80 ? 'warning' : 'success'}
-                              >
-                                Need {assignment.requiredGrade.toFixed(1)}%
-                              </Badge>
-                            </div>
-                            <small className="text-muted">
-                              {assignment.gradeWeight}% weight
-                            </small>
-                          </div>
-                        </ListGroup.Item>
-                      ))}
-                    </ListGroup>
-                  ) : (
-                    <Alert variant="success">
-                      All assignments completed or no remaining assignments with weights.
-                    </Alert>
-                  )}
-                  
-                  {requiredGrades.some(a => a.requiredGrade > 100) && (
-                    <Alert variant="danger" className="mt-3">
-                      <strong>Warning:</strong> Achieving {targetGrade}% is not possible with current grades.
-                    </Alert>
-                  )}
-                </Card.Body>
-              </Card>
-            </Col>
-          </Row>
-        </>
-      )}
+                  let earned = 0;
+                  itemsWithScores.forEach(item => {
+                    const pct = (parseFloat(item.score) / parseFloat(item.maxScore)) * 100;
+                    earned += pct * (parseFloat(item.weight) / 100);
+                  });
 
-      {loading && <div className="spinner-custom"></div>}
-    </Container>
+                  let projected = earned;
+                  itemsWithoutScores.forEach(item => {
+                    projected += (scenario.mult * 100) * (parseFloat(item.weight || 0) / 100);
+                  });
+
+                  return (
+                    <Col md={3} key={idx}>
+                      <div className="scenario-card">
+                        <h6>{scenario.name}</h6>
+                        <p className="text-muted small mb-2">{scenario.desc}</p>
+                        <div className="scenario-grade">
+                          {projected.toFixed(1)}%
+                        </div>
+                        <Badge bg={scenario.color}>{getLetterGrade(projected)}</Badge>
+                      </div>
+                    </Col>
+                  );
+                })}
+              </Row>
+            </div>
+          </>
+        )}
+
+        {!selectedCourse && (
+          <Alert variant="info" className="text-center py-5">
+            <FaCalculator size={48} className="mb-3 text-muted" />
+            <h5>Select a course to start calculating grades</h5>
+            <p className="text-muted mb-0">Choose a course from the dropdown above to begin.</p>
+          </Alert>
+        )}
+      </Container>
+
+      <Footer />
+    </div>
   );
 };
 
